@@ -1,48 +1,109 @@
 // src/services/stockApi.js
 
-const MINIO_CSV_URL =
-  "http://52.64.32.78:9000/dantt.bucket1/Final_report/FPT_stock.json"; 
-// Lưu ý: file của bạn là CSV text (dù đuôi .json)
+// NOTE: Frontend KHÔNG fetch trực tiếp MinIO (HTTP) khi deploy HTTPS.
+// Ta dùng Vercel proxy: /api/fpt-data
+const PROXY_URL = "/api/fpt-data.js";
 
+/**
+ * Parse number safely:
+ * - remove commas
+ * - handle empty / null
+ */
+function toNum(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replaceAll(",", "");
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Parse dd/mm/yyyy -> sortable key "yyyy-mm-dd"
+ */
+function dmyToYmd(dmy) {
+  const s = String(dmy || "").trim();
+  const parts = s.split("/");
+  if (parts.length !== 3) return null;
+  const [dd, mm, yyyy] = parts;
+  if (!dd || !mm || !yyyy) return null;
+  return `${yyyy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+}
+
+/**
+ * CSV parser robust:
+ * - handle BOM
+ * - handle empty lines
+ * - map by header name (order independent)
+ */
 function parseCSV(text) {
-  const lines = text.trim().split(/\r?\n/);
+  if (!text) return [];
+
+  // Remove BOM if exists
+  const cleaned = text.replace(/^\uFEFF/, "").trim();
+  const lines = cleaned.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) return [];
 
-  const headers = lines[0].split(",").map((h) => h.trim());
+  const headers = lines[0]
+    .split(",")
+    .map((h) => h.trim().toLowerCase());
 
-  const rows = lines.slice(1).map((line) => {
-    const cols = line.split(",").map((c) => c.trim());
-    const obj = {};
-    headers.forEach((h, i) => (obj[h] = cols[i]));
+  // Helper: get field by name (case-insensitive)
+  const idxOf = (name) => headers.indexOf(name.toLowerCase());
 
-    // Parse số an toàn
-    const toNum = (v) => {
-      const n = Number(String(v ?? "").replaceAll(",", ""));
-      return Number.isFinite(n) ? n : null;
-    };
+  const iDate = idxOf("date");
+  const iOpen = idxOf("open");
+  const iHigh = idxOf("high");
+  const iLow = idxOf("low");
+  const iClose = idxOf("close");
+  const iVolume = idxOf("volume");
+  const iChange = idxOf("change");
 
-    const changeRaw = String(obj.change ?? "").trim(); // ví dụ: "1.6(1.53 %)" hoặc "-1.2(-0.8 %)"
+  // Nếu thiếu cột chính, trả rỗng để UI biết lỗi schema
+  if (iDate < 0 || iOpen < 0 || iHigh < 0 || iLow < 0 || iClose < 0) {
+    return [];
+  }
 
-    // Chuẩn hoá changeText để PriceCard bắt được up/down (startsWith + / -)
-    let changeText = changeRaw;
+  const rows = [];
+
+  for (let li = 1; li < lines.length; li++) {
+    const cols = lines[li].split(",").map((c) => c.trim());
+
+    const dateRaw = cols[iDate];
+    const ymd = dmyToYmd(dateRaw);
+
+    const open = toNum(cols[iOpen]);
+    const high = toNum(cols[iHigh]);
+    const low = toNum(cols[iLow]);
+    const close = toNum(cols[iClose]);
+    const volume = iVolume >= 0 ? toNum(cols[iVolume]) : null;
+
+    // Validate essential OHLC
+    if (!ymd || open == null || high == null || low == null || close == null) continue;
+
+    // changeText: normalize +/-
+    let changeText = iChange >= 0 ? String(cols[iChange] ?? "").trim() : "";
     if (changeText && !changeText.startsWith("+") && !changeText.startsWith("-")) {
       const firstNum = Number(changeText.split("(")[0]);
       if (Number.isFinite(firstNum) && firstNum > 0) changeText = "+" + changeText;
-      else if (Number.isFinite(firstNum) && firstNum < 0) changeText = changeText; // đã âm rồi
     }
 
-    return {
-      date: String(obj.date ?? "").trim(), // dd/mm/yyyy
-      close: toNum(obj.close),
-      open: toNum(obj.open),
-      high: toNum(obj.high),
-      low: toNum(obj.low),
-      volume: toNum(obj.volume),
-      changeText, // App đang dùng latest.changeText
-    };
-  });
+    rows.push({
+      date: String(dateRaw).trim(), // dd/mm/yyyy
+      _ymd: ymd,                    // internal for sorting
+      open,
+      high,
+      low,
+      close,
+      volume: volume ?? 0,
+      changeText,
+    });
+  }
 
-  return rows.filter((r) => r.date); // bỏ dòng rác nếu có
+  // Sort newest -> oldest so latest = rows[0]
+  rows.sort((a, b) => (a._ymd < b._ymd ? 1 : a._ymd > b._ymd ? -1 : 0));
+
+  // remove internal field
+  return rows.map(({ _ymd, ...rest }) => rest);
 }
 
 // hash để App so sánh "New data" / "No change"
@@ -53,12 +114,12 @@ async function sha256Hex(str) {
 }
 
 /**
- * Trả về đúng shape mà App.jsx đang dùng:
+ * Return shape expected by App.jsx:
  * { hash, data: { symbol, fetchedAt, rows, latest } }
  */
 export async function fetchFptFromMinio() {
-  const res = await fetch(MINIO_CSV_URL, { cache: "no-store" });
-  if (!res.ok) throw new Error(`MinIO fetch failed: ${res.status} ${res.statusText}`);
+  const res = await fetch(PROXY_URL, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Proxy fetch failed: ${res.status} ${res.statusText}`);
 
   const text = await res.text();
   const rows = parseCSV(text);
@@ -68,7 +129,7 @@ export async function fetchFptFromMinio() {
   const data = {
     symbol: "FPT",
     fetchedAt: new Date().toISOString(),
-    rows,                 // rows mới -> cũ (giữ nguyên như file)
+    rows,
     latest: rows[0] || null,
   };
 
