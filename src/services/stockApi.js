@@ -8,7 +8,7 @@
  *   https://your-domain/FPT_stock.json
  */
 
-const DATA_URL = "/FPT_stock.json";
+const DATA_URL = "/FPT_stock.csv";
 
 /**
  * Parse number an toàn
@@ -135,4 +135,17 @@ export async function fetchFptFromMinio() {
       latest: rows[0] || null,
     },
   };
+}
+export async function fetchFptForecast() {
+  const res = await fetch("/FPT_forecast.json", { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("Failed to load FPT_forecast.json");
+  }
+
+  const data = await res.json();
+
+  // Chuẩn hoá & sort theo step (phòng trường hợp)
+  return data
+    .filter((d) => Number.isFinite(d.predicted_close))
+    .sort((a, b) => a.step - b.step);
 }

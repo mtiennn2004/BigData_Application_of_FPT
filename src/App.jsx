@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // import PriceLineChart from "./components/PriceLineChart.jsx";
 import KpiBoard from "./components/KpiBoard.jsx";
-import { fetchFptFromMinio } from "./services/stockApi.js";
+import { fetchFptFromMinio, fetchFptForecast } from "./services/stockApi.js";
 import StockChart from "./components/StockChart.jsx";
 
 
@@ -121,13 +121,67 @@ function filterRowsByRange(rows, range) {
     return dt && dt >= cutoff;
   });
 }
+function ForecastCard({ forecast, onRefreshForecast }) {
+  return (
+    <div className="card">
+      <div className="card-title">
+        <span>Dự đoán giá (Linear Regression)</span>
+        <button className="btn" onClick={onRefreshForecast}>Reload</button>
+      </div>
+
+      {!forecast ? (
+        <div className="muted">
+          Chưa có forecast. Hãy chạy <code>python public/train_predict.py</code> để tạo{" "}
+          <code>public/FPT_forecast.json</code>.
+        </div>
+      ) : forecast.length === 0 ? (
+        <div className="muted">Forecast rỗng.</div>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Phiên</th>
+              <th>Ngày</th>
+              <th className="right-align">Close (dự đoán)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {forecast.map((f) => (
+              <tr key={f.step}>
+                <td>{f.step}</td>
+                <td>{f.date ?? "—"}</td>
+                <td className="right-align"><b>{fmtNumber(f.predicted_close)}</b></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   const [payload, setPayload] = useState(null);
   const [status, setStatus] = useState({ loading: true, error: null, updated: null });
   const [range, setRange] = useState("1Y");
 
+  // ✅ forecast state
+  const [forecast, setForecast] = useState(null);
+  const [forecastError, setForecastError] = useState(null);
+
   const lastHashRef = useRef(null);
+
+  // ✅ load forecast từ public/FPT_forecast.json
+  const loadForecast = useCallback(async () => {
+    try {
+      setForecastError(null);
+      const data = await fetchFptForecast();
+      setForecast(data);
+    } catch (e) {
+      setForecast(null);
+      setForecastError(String(e));
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -139,12 +193,18 @@ export default function App() {
       } else {
         setStatus({ loading: false, error: null, updated: false });
       }
+
+      // ✅ refresh luôn forecast (nếu file có sẵn)
+      await loadForecast();
     } catch (e) {
       setStatus({ loading: false, error: String(e), updated: null });
     }
-  }, []);
+  }, [loadForecast]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // ✅ load forecast lần đầu (trong trường hợp payload chưa có)
+  useEffect(() => { loadForecast(); }, [loadForecast]);
 
   useEffect(() => {
     const t = setInterval(refresh, 60000);
@@ -193,6 +253,18 @@ export default function App() {
         </div>
       )}
 
+      {/* ✅ lỗi forecast (nếu chưa có file json hoặc fetch fail) */}
+      {forecastError && (
+        <div className="card" style={{ borderColor: "rgba(239,68,68,.35)" }}>
+          <div className="card-title"><span>Lỗi forecast</span></div>
+          <div className="muted" style={{ color: "#fecaca" }}>{forecastError}</div>
+          <div className="muted" style={{ marginTop: 8 }}>
+            Hãy chạy: <code>python public/train_predict.py</code> để tạo{" "}
+            <code>public/FPT_forecast.json</code>
+          </div>
+        </div>
+      )}
+
       {!payload ? (
         <div className="card">
           <div className="card-title"><span>Loading…</span></div>
@@ -206,13 +278,18 @@ export default function App() {
             {/* ✅ KPI ở cột trái */}
             {payload?.rows?.length ? <KpiBoard rows={payload.rows} /> : null}
 
+            {/* ✅ Forecast card */}
+            <ForecastCard
+              forecast={forecast}
+              onRefreshForecast={loadForecast}
+            />
+
             <InfoCard
               fetchedAt={payload.fetchedAt}
               rowsCount={payload.rows?.length}
               hash={lastHashRef.current}
             />
           </div>
-
 
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div className="card">
@@ -232,9 +309,6 @@ export default function App() {
               </div>
 
               <StockChart rows={chartRows} symbol={payload?.symbol || "FPT"} />
-              {/* <div className="muted" style={{ marginTop: 10 }}>
-                Tip: hover để xem tooltip. Hiện tại là line chart + volume (nhẹ). Sau đó mình sẽ nâng lên candlestick + indicators.
-              </div> */}
             </div>
 
             <div className="card">

@@ -64,7 +64,7 @@ export default function KpiBoard({ rows }) {
     <div className="card" style={{padding:12}}>
       <div style={{display:"flex", justifyContent:"space-between", alignItems:"baseline", gap:12}}>
         <div style={{fontSize:16, fontWeight:700}}>Chỉ số nhanh</div>
-        <div className="muted">Dựa trên OHLCV từ file Excel</div>
+        {/* <div className="muted">Dựa trên OHLCV từ file Excel</div> */}
       </div>
 
       <div style={{display:"grid", gridTemplateColumns:"repeat(4, minmax(0, 1fr))", gap:10, marginTop:12}}>
