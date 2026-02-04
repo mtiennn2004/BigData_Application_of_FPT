@@ -1,13 +1,12 @@
 {
   "n_rows_raw": 4768,
-  "n_rows_trainable": 4568,
+  "n_rows_trainable": 4718,
   "features_used": [
     "kl",
     "Pct_ThayDoi",
     "Log_Return",
     "MA20",
     "MA50",
-    "MA200",
     "Lag_1",
     "Lag_3",
     "Lag_5",
@@ -18,6 +17,6 @@
     "BB_Lower"
   ],
   "test_ratio": 0.2,
-  "rmse": 1.7427360661182698,
-  "r2": 0.994999340133519
+  "rmse": 1.7350418179265943,
+  "r2": 0.9950522541012845
 }

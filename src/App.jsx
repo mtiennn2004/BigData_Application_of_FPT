@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-// import PriceLineChart from "./components/PriceLineChart.jsx";
 import KpiBoard from "./components/KpiBoard.jsx";
-import { fetchFptFromMinio, fetchFptForecast } from "./services/stockApi.js";
 import StockChart from "./components/StockChart.jsx";
-
+import { fetchFptFromMinio, fetchFptForecast } from "./services/stockApi.js";
 
 function fmtNumber(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
@@ -14,7 +12,9 @@ function PriceCard({ symbol, latest }) {
   if (!latest) {
     return (
       <div className="card">
-        <div className="card-title"><span>Summary</span></div>
+        <div className="card-title">
+          <span>Summary</span>
+        </div>
         <div className="muted">Chưa có dữ liệu.</div>
       </div>
     );
@@ -72,15 +72,17 @@ function PriceCard({ symbol, latest }) {
 function InfoCard({ fetchedAt, rowsCount, hash }) {
   return (
     <div className="card">
-      <div className="card-title"><span>Thông tin</span></div>
-      <div className="muted">
-        • Auto fetch khi mở trang, focus và mỗi 60s<br />
+      <div className="card-title">
+        <span>Thông tin</span>
       </div>
+      <div className="muted">• Auto fetch khi mở trang, focus và mỗi 60s</div>
 
       <div className="kpi-grid" style={{ marginTop: 12 }}>
         <div className="kpi-item">
           <div className="kpi-label">FetchedAt</div>
-          <div className="val">{fetchedAt ? new Date(fetchedAt).toLocaleString() : "—"}</div>
+          <div className="val">
+            {fetchedAt ? new Date(fetchedAt).toLocaleString() : "—"}
+          </div>
         </div>
         <div className="kpi-item">
           <div className="kpi-label">Số phiên</div>
@@ -88,7 +90,9 @@ function InfoCard({ fetchedAt, rowsCount, hash }) {
         </div>
         <div className="kpi-item" style={{ gridColumn: "1 / -1" }}>
           <div className="kpi-label">Hash</div>
-          <div className="val" style={{ wordBreak: "break-all" }}>{hash || "—"}</div>
+          <div className="val" style={{ wordBreak: "break-all" }}>
+            {hash || "—"}
+          </div>
         </div>
       </div>
     </div>
@@ -96,7 +100,6 @@ function InfoCard({ fetchedAt, rowsCount, hash }) {
 }
 
 function filterRowsByRange(rows, range) {
-  // rows từ API: mới -> cũ
   if (!rows?.length) return [];
   if (range === "5Y") return rows;
 
@@ -104,7 +107,6 @@ function filterRowsByRange(rows, range) {
   const days = daysMap[range] || 366;
 
   const parseDateVN = (s) => {
-    // dd/mm/yyyy
     const [d, m, y] = (s || "").split("/").map(Number);
     if (!d || !m || !y) return null;
     return new Date(y, m - 1, d);
@@ -121,18 +123,42 @@ function filterRowsByRange(rows, range) {
     return dt && dt >= cutoff;
   });
 }
+
+function filterRowsByDateRange(rows, fromYmd, toYmd) {
+  if (!rows?.length) return [];
+
+  const dmyToTs = (s) => {
+    const [d, m, y] = (s || "").split("/").map(Number);
+    if (!d || !m || !y) return null;
+    return new Date(y, m - 1, d).getTime();
+  };
+
+  const fromTs = fromYmd ? new Date(fromYmd).getTime() : null; // yyyy-mm-dd
+  const toTs = toYmd ? new Date(toYmd).getTime() : null;
+
+  return rows.filter((r) => {
+    const ts = dmyToTs(r.date);
+    if (!ts) return false;
+    if (fromTs != null && ts < fromTs) return false;
+    if (toTs != null && ts > toTs) return false;
+    return true;
+  });
+}
+
 function ForecastCard({ forecast, onRefreshForecast }) {
   return (
     <div className="card">
       <div className="card-title">
         <span>Dự đoán giá (Linear Regression)</span>
-        <button className="btn" onClick={onRefreshForecast}>Reload</button>
+        <button className="btn" onClick={onRefreshForecast}>
+          Reload
+        </button>
       </div>
 
       {!forecast ? (
         <div className="muted">
-          Chưa có forecast. Hãy chạy <code>python public/train_predict.py</code> để tạo{" "}
-          <code>public/FPT_forecast.json</code>.
+          Chưa có forecast. Hãy chạy <code>python public/train_predict.py</code> để
+          tạo <code>public/FPT_forecast.json</code>.
         </div>
       ) : forecast.length === 0 ? (
         <div className="muted">Forecast rỗng.</div>
@@ -146,11 +172,13 @@ function ForecastCard({ forecast, onRefreshForecast }) {
             </tr>
           </thead>
           <tbody>
-            {forecast.map((f) => (
-              <tr key={f.step}>
-                <td>{f.step}</td>
+            {forecast.map((f, idx) => (
+              <tr key={f.step ?? `${f.date ?? "na"}-${idx}`}>
+                <td>{f.step ?? idx + 1}</td>
                 <td>{f.date ?? "—"}</td>
-                <td className="right-align"><b>{fmtNumber(f.predicted_close)}</b></td>
+                <td className="right-align">
+                  <b>{fmtNumber(f.predicted_close)}</b>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -165,18 +193,21 @@ export default function App() {
   const [status, setStatus] = useState({ loading: true, error: null, updated: null });
   const [range, setRange] = useState("1Y");
 
-  // ✅ forecast state
+  // date range picker (yyyy-mm-dd)
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  // forecast
   const [forecast, setForecast] = useState(null);
   const [forecastError, setForecastError] = useState(null);
 
   const lastHashRef = useRef(null);
 
-  // ✅ load forecast từ public/FPT_forecast.json
   const loadForecast = useCallback(async () => {
     try {
       setForecastError(null);
       const data = await fetchFptForecast();
-      setForecast(data);
+      setForecast(Array.isArray(data) ? data : []);
     } catch (e) {
       setForecast(null);
       setForecastError(String(e));
@@ -185,7 +216,8 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetchFptFromMinio(); // {updated, hash, data}
+      const res = await fetchFptFromMinio();
+
       if (!lastHashRef.current || res.hash !== lastHashRef.current) {
         lastHashRef.current = res.hash;
         setPayload(res.data);
@@ -194,22 +226,23 @@ export default function App() {
         setStatus({ loading: false, error: null, updated: false });
       }
 
-      // ✅ refresh luôn forecast (nếu file có sẵn)
+      // ✅ refresh luôn forecast cùng lúc (đủ rồi, không cần useEffect loadForecast riêng)
       await loadForecast();
     } catch (e) {
       setStatus({ loading: false, error: String(e), updated: null });
     }
   }, [loadForecast]);
 
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // ✅ load forecast lần đầu (trong trường hợp payload chưa có)
-  useEffect(() => { loadForecast(); }, [loadForecast]);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
   useEffect(() => {
     const t = setInterval(refresh, 60000);
     const onFocus = () => refresh();
-    const onVis = () => { if (document.visibilityState === "visible") refresh(); };
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
 
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
@@ -221,11 +254,19 @@ export default function App() {
     };
   }, [refresh]);
 
-  const chartRows = useMemo(() => filterRowsByRange(payload?.rows || [], range), [payload, range]);
-  const latest20 = useMemo(() => (payload?.rows || []).slice(0, 20), [payload]);
+  const chartRows = useMemo(() => {
+    const base = payload?.rows || [];
+    if (fromDate || toDate) return filterRowsByDateRange(base, fromDate, toDate);
+    return filterRowsByRange(base, range);
+  }, [payload, range, fromDate, toDate]);
 
-  const pillText =
-    status.updated === null ? "—" : status.updated ? "New data" : "No change";
+  const latest20 = useMemo(() => {
+    const base = payload?.rows || [];
+    const filtered = fromDate || toDate ? filterRowsByDateRange(base, fromDate, toDate) : base;
+    return filtered.slice(0, 20);
+  }, [payload, fromDate, toDate]);
+
+  const pillText = status.updated === null ? "—" : status.updated ? "New data" : "No change";
 
   return (
     <div className="dashboard">
@@ -242,22 +283,31 @@ export default function App() {
 
         <div className="actions">
           <div className="pill">{pillText}</div>
-          <button className="btn" onClick={refresh}>Refresh</button>
+          <button className="btn" onClick={refresh}>
+            Refresh
+          </button>
         </div>
       </div>
 
       {status.error && (
         <div className="card" style={{ borderColor: "rgba(239,68,68,.35)" }}>
-          <div className="card-title"><span>Lỗi</span></div>
-          <div className="muted" style={{ color: "#fecaca" }}>{status.error}</div>
+          <div className="card-title">
+            <span>Lỗi</span>
+          </div>
+          <div className="muted" style={{ color: "#fecaca" }}>
+            {status.error}
+          </div>
         </div>
       )}
 
-      {/* ✅ lỗi forecast (nếu chưa có file json hoặc fetch fail) */}
       {forecastError && (
         <div className="card" style={{ borderColor: "rgba(239,68,68,.35)" }}>
-          <div className="card-title"><span>Lỗi forecast</span></div>
-          <div className="muted" style={{ color: "#fecaca" }}>{forecastError}</div>
+          <div className="card-title">
+            <span>Lỗi forecast</span>
+          </div>
+          <div className="muted" style={{ color: "#fecaca" }}>
+            {forecastError}
+          </div>
           <div className="muted" style={{ marginTop: 8 }}>
             Hãy chạy: <code>python public/train_predict.py</code> để tạo{" "}
             <code>public/FPT_forecast.json</code>
@@ -267,23 +317,17 @@ export default function App() {
 
       {!payload ? (
         <div className="card">
-          <div className="card-title"><span>Loading…</span></div>
-          <div className="muted">Đang tải dữ liệu từ API…</div>
+          <div className="card-title">
+            <span>Loading…</span>
+          </div>
+          <div className="muted">Đang tải dữ liệu…</div>
         </div>
       ) : (
         <div className="grid">
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <PriceCard symbol={payload.symbol} latest={payload.latest} />
-
-            {/* ✅ KPI ở cột trái */}
             {payload?.rows?.length ? <KpiBoard rows={payload.rows} /> : null}
-
-            {/* ✅ Forecast card */}
-            <ForecastCard
-              forecast={forecast}
-              onRefreshForecast={loadForecast}
-            />
-
+            <ForecastCard forecast={forecast} onRefreshForecast={loadForecast} />
             <InfoCard
               fetchedAt={payload.fetchedAt}
               rowsCount={payload.rows?.length}
@@ -300,7 +344,11 @@ export default function App() {
                     <button
                       key={k}
                       className={"chip " + (range === k ? "active" : "")}
-                      onClick={() => setRange(k)}
+                      onClick={() => {
+                        setRange(k);
+                        setFromDate("");
+                        setToDate("");
+                      }}
                     >
                       {k}
                     </button>
@@ -308,11 +356,53 @@ export default function App() {
                 </div>
               </div>
 
-              <StockChart rows={chartRows} symbol={payload?.symbol || "FPT"} />
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  marginTop: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div className="muted">Tùy chọn:</div>
+
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="input"
+                />
+                <span className="muted">→</span>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="input"
+                />
+
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setFromDate("");
+                    setToDate("");
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+
+              <StockChart
+                rows={chartRows}
+                forecast={forecast || []}
+                symbol={payload?.symbol || "FPT"}
+              />
             </div>
 
             <div className="card">
-              <div className="card-title"><span>20 phiên gần nhất</span></div>
+              <div className="card-title">
+                <span>20 phiên gần nhất</span>
+              </div>
               <table className="table">
                 <thead>
                   <tr>
@@ -331,14 +421,22 @@ export default function App() {
                       <td className="right-align">{fmtNumber(r.open)}</td>
                       <td className="right-align">{fmtNumber(r.high)}</td>
                       <td className="right-align">{fmtNumber(r.low)}</td>
-                      <td className="right-align"><b>{fmtNumber(r.close)}</b></td>
+                      <td className="right-align">
+                        <b>{fmtNumber(r.close)}</b>
+                      </td>
                       <td className="right-align">{fmtNumber(r.volume)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
 
+              {(fromDate || toDate) && (
+                <div className="muted" style={{ marginTop: 10 }}>
+                  Đang lọc theo khoảng: <b>{fromDate || "—"}</b> →{" "}
+                  <b>{toDate || "—"}</b>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

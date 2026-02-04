@@ -15,8 +15,9 @@ CSV_PATH = os.path.join("public", "FPT_stock.csv")
 FORECAST_OUT = os.path.join("public", "FPT_forecast.json")
 METRICS_OUT = os.path.join("public", "FPT_train_metrics.json")
 
-N_DAYS_AHEAD = 10   # số phiên dự đoán tiếp theo
+N_DAYS_AHEAD = 30   # ✅ số phiên dự đoán tiếp theo
 TEST_RATIO = 0.2    # 80/20
+
 
 # -----------------------
 # Utilities
@@ -25,17 +26,20 @@ def norm_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
+    # Chuẩn hoá các tên cột phổ biến về đúng schema bạn dùng
     rename_map = {
-        "close": "close",
         "date": "ngay",
+        "close": "close",
+        "open": "open",
+        "high": "high",
+        "low": "low",
         "volume": "kl",
-        "change": "change",
-        "open": "open"
+        "kl": "kl",
     }
 
-    for k, v in rename_map.items():
-        if k in df.columns and v not in df.columns:
-            df = df.rename(columns={k: v})
+    for src, dst in rename_map.items():
+        if src in df.columns and dst not in df.columns:
+            df = df.rename(columns={src: dst})
 
     return df
 
@@ -43,6 +47,7 @@ def norm_cols(df: pd.DataFrame) -> pd.DataFrame:
 def parse_date(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "ngay" in df.columns:
+        # dữ liệu dạng dd/mm/yyyy
         df["ngay_dt"] = pd.to_datetime(df["ngay"], errors="coerce", dayfirst=True)
     else:
         df["ngay_dt"] = pd.NaT
@@ -51,13 +56,20 @@ def parse_date(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Feature engineering tương tự ảnh bạn gửi.
+    Feature engineering.
     Target = close ngày tiếp theo.
     """
     df = df.copy()
-    sort_key = "ngay_dt" if "ngay_dt" in df.columns and df["ngay_dt"].notna().any() else None
-    if sort_key:
-        df = df.sort_values(sort_key).reset_index(drop=True)
+
+    # đảm bảo có close + kl
+    if "close" not in df.columns:
+        raise ValueError("Thiếu cột 'close' để tạo features.")
+    if "kl" not in df.columns:
+        df["kl"] = 0.0
+
+    # sort theo ngày nếu có
+    if "ngay_dt" in df.columns and df["ngay_dt"].notna().any():
+        df = df.sort_values("ngay_dt").reset_index(drop=True)
 
     # Returns
     df["Pct_ThayDoi"] = df["close"].pct_change()
@@ -76,15 +88,16 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     # Momentum
     df["Momentum_5"] = df["close"] - df["close"].shift(5)
 
-    # Volatility
+    # Volatility (log return std) - vẫn giữ làm feature
     df["Volatility_20"] = df["Log_Return"].rolling(20).std()
 
-    # Dist_MA50 (nếu bạn có dùng)
+    # Dist_MA50
     df["Dist_MA50"] = df["close"] - df["MA50"]
 
-    # Bollinger Bands
-    df["BB_Upper"] = df["MA20"] + 2 * df["Volatility_20"]
-    df["BB_Lower"] = df["MA20"] - 2 * df["Volatility_20"]
+    # ✅ Bollinger chuẩn: dùng STD20 của CLOSE (đúng đơn vị giá)
+    df["STD20"] = df["close"].rolling(20).std()
+    df["BB_Upper"] = df["MA20"] + 2 * df["STD20"]
+    df["BB_Lower"] = df["MA20"] - 2 * df["STD20"]
 
     # Target: ngày tiếp theo
     df["Target"] = df["close"].shift(-1)
@@ -93,29 +106,39 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def choose_feature_cols(df: pd.DataFrame) -> list[str]:
-    """
-    Tự chọn đúng số feature để tránh lỗi 13/14.
-    Nếu Dist_MA50 toàn NaN (data ngắn hoặc không đủ MA50) thì bỏ nó.
-    """
     base = [
-        "kl", "Pct_ThayDoi", "Log_Return",
-        "MA20", "MA50", "MA200",
-        "Lag_1", "Lag_3", "Lag_5",
-        "Momentum_5", "Volatility_20",
-        "BB_Upper", "BB_Lower",
+        "kl",
+        "Pct_ThayDoi",
+        "Log_Return",
+        "MA20",
+        "MA50",
+        # "MA200",  # ❌ bỏ để forecast xa ổn định
+        "Lag_1",
+        "Lag_3",
+        "Lag_5",
+        "Momentum_5",
+        "Volatility_20",
+        "BB_Upper",
+        "BB_Lower",
     ]
-    # Dist_MA50 là feature thứ 14 theo ảnh bạn; thêm nếu usable
+
     if "Dist_MA50" in df.columns and df["Dist_MA50"].notna().sum() > 0:
-        base.insert(-2, "Dist_MA50")  # chèn trước BB_Upper/BB_Lower
+        base.insert(-2, "Dist_MA50")
+
+    base = [c for c in base if c in df.columns]
     return base
 
 
-def row_to_feature_vector(history_df: pd.DataFrame, feature_cols: list[str]) -> np.ndarray:
+def row_to_feature_vector(history_df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
     """
-    Lấy row cuối cùng (đã có đủ feature) để predict Target (ngày tiếp theo).
+    Lấy row cuối cùng (đã có đủ feature) => trả về DataFrame 1 hàng có feature names
+    để không bị warning của sklearn.
     """
+    if history_df is None or len(history_df) == 0:
+        raise ValueError("history_df rỗng, không thể predict.")
+
     last = history_df.iloc[-1]
-    x = np.array([last[c] for c in feature_cols], dtype=float).reshape(1, -1)
+    x = pd.DataFrame([[float(last[c]) for c in feature_cols]], columns=feature_cols)
     return x
 
 
@@ -134,10 +157,9 @@ def main(n_days_ahead: int = N_DAYS_AHEAD):
         raise ValueError(f"CSV thiếu cột close. Các cột hiện có: {list(df.columns)}")
 
     if "kl" not in df.columns:
-        df["kl"] = 0
+        df["kl"] = 0.0
 
     df = add_features(df)
-
     feature_cols = choose_feature_cols(df)
 
     # cần đủ data để có MA200, vol20, ...
@@ -145,7 +167,7 @@ def main(n_days_ahead: int = N_DAYS_AHEAD):
     if len(df_train) < 50:
         raise ValueError(
             "Data sau khi tạo feature bị quá ít. "
-            "Bạn cần nhiều phiên hơn (đặc biệt nếu dùng MA200)."
+            "Bạn cần nhiều phiên hơn (đặc biệt nếu dùng MA200/rolling)."
         )
 
     X = df_train[feature_cols]
@@ -182,24 +204,25 @@ def main(n_days_ahead: int = N_DAYS_AHEAD):
         )
 
     # -----------------------
-    # Iterative forecast
+    # Iterative forecast (an toàn, không làm hist rỗng)
     # -----------------------
-    # Lấy lịch sử tới dòng cuối có đủ feature
+    # Hist dùng để predict: phải là df đã có feature đầy đủ
     hist = df_train.copy()
 
-    # ngày cuối để tạo mốc ngày tương lai (phiên - business day)
+    # ngày cuối để tạo mốc ngày tương lai (business day)
     last_dt = None
     if "ngay_dt" in df.columns and df["ngay_dt"].notna().any():
         last_dt = df["ngay_dt"].dropna().iloc[-1]
 
     future_dates = None
     if last_dt is not None:
+        # +1 .. +n business days
         future_dates = pd.bdate_range(last_dt, periods=n_days_ahead + 1, inclusive="right")
 
     forecasts = []
 
     for i in range(n_days_ahead):
-        # predict close ngày tiếp theo dựa trên row cuối
+        # predict close ngày tiếp theo dựa trên row cuối có đủ feature
         x = row_to_feature_vector(hist, feature_cols)
         next_close = float(model.predict(x)[0])
 
@@ -213,30 +236,36 @@ def main(n_days_ahead: int = N_DAYS_AHEAD):
             "predicted_close": next_close
         })
 
-        # append "ngày mới" vào hist để dự đoán tiếp
-        new_row = hist.iloc[-1].copy()
-        new_row["close"] = next_close
-        # volume giả lập: giữ volume cũ
-        new_row["kl"] = float(new_row.get("kl", 0))
+        # --- cập nhật lịch sử close để dự đoán bước tiếp theo ---
+        # lấy lịch sử nền chỉ gồm ngay_dt, close, kl
+        base_hist = hist[["ngay_dt", "close", "kl"]].copy()
 
-        # set date nếu có
-        if future_dates is not None:
-            new_row["ngay_dt"] = future_dates[i]
+        new_dt = future_dates[i] if future_dates is not None else pd.NaT
+        last_kl = float(base_hist["kl"].iloc[-1]) if len(base_hist) else 0.0
 
-        # Sau khi set close, cần recompute features cho row mới
-        # Cách đơn giản: rebuild features lại cho toàn hist+row mới (vì rolling)
-        # Với N nhỏ (10) thì chạy nhanh.
-        temp = pd.concat([hist[["ngay_dt","close","kl"]], pd.DataFrame([new_row[["ngay_dt","close","kl"]]])], ignore_index=True)
+        new_point = pd.DataFrame([{
+            "ngay_dt": new_dt,
+            "close": next_close,
+            "kl": last_kl
+        }])
 
-        # Chuẩn hoá cột để add_features dùng được
-        temp = temp.rename(columns={"ngay_dt": "ngay_dt", "close": "close", "kl": "kl"})
-        temp["ngay"] = temp["ngay_dt"].dt.strftime("%d/%m/%Y")
+        base_hist = pd.concat([base_hist, new_point], ignore_index=True)
 
-        temp = add_features(temp)
+        # tạo ngay dạng dd/mm/yyyy để add_features dùng
+        base_hist["ngay"] = base_hist["ngay_dt"].dt.strftime("%d/%m/%Y")
+
+        # tính lại feature trên toàn lịch sử
+        temp = add_features(base_hist)
+
+        # chỉ lấy row đủ feature để predict vòng sau
         temp = temp.dropna(subset=feature_cols).reset_index(drop=True)
 
-        # hist mới là phần temp có đủ feature (giữ lại các cột cần)
-        # (đảm bảo row cuối luôn có đủ feature để predict vòng sau)
+        if len(temp) == 0:
+            raise RuntimeError(
+                "Forecast bị rỗng sau khi dropna(feature). "
+                "Giảm bớt rolling feature (MA200) hoặc tăng dữ liệu lịch sử."
+            )
+
         hist = temp.copy()
 
     with open(FORECAST_OUT, "w", encoding="utf-8") as f:
@@ -245,6 +274,7 @@ def main(n_days_ahead: int = N_DAYS_AHEAD):
     print(f"✅ Train metrics saved -> {METRICS_OUT}")
     print(f"✅ Forecast saved -> {FORECAST_OUT}")
     print(f"✅ Features used ({len(feature_cols)}): {feature_cols}")
+    print(f"✅ Forecast steps: {n_days_ahead}")
 
 
 if __name__ == "__main__":
